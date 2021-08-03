@@ -3,6 +3,8 @@ package flatten
 import (
 	"encoding/json"
 	"errors"
+	"github.com/jinzhu/copier"
+	"reflect"
 	"regexp"
 	"strconv"
 )
@@ -36,16 +38,20 @@ var (
 	UnderscoreStyle = SeparatorStyle{Middle: "_"}
 )
 
+type Options struct {
+	NotFlattenSlice bool
+}
+
 // Nested input must be a map or slice
 var NotValidInputError = errors.New("Not a valid input: map or slice")
 
 // Flatten generates a flat map from a nested one.  The original may include values of type map, slice and scalar,
 // but not struct.  Keys in the flat map will be a compound of descending map keys and slice iterations.
 // The presentation of keys is set by style.  A prefix is joined to each key.
-func Flatten(nested map[string]interface{}, prefix string, style SeparatorStyle) (map[string]interface{}, error) {
+func Flatten(nested map[string]interface{}, prefix string, style SeparatorStyle, options Options) (map[string]interface{}, error) {
 	flatmap := make(map[string]interface{})
 
-	err := flatten(true, flatmap, nested, prefix, style)
+	err := flatten(true, flatmap, nested, prefix, style, options)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +78,7 @@ func FlattenString(nestedstr, prefix string, style SeparatorStyle) (string, erro
 		return "", err
 	}
 
-	flatmap, err := Flatten(nested, prefix, style)
+	flatmap, err := Flatten(nested, prefix, style, Options{})
 	if err != nil {
 		return "", err
 	}
@@ -85,15 +91,55 @@ func FlattenString(nestedstr, prefix string, style SeparatorStyle) (string, erro
 	return string(flatb), nil
 }
 
-func flatten(top bool, flatMap map[string]interface{}, nested interface{}, prefix string, style SeparatorStyle) error {
+func flatten(top bool, flatMap map[string]interface{}, nested interface{}, prefix string, style SeparatorStyle, options Options) error {
 	assign := func(newKey string, v interface{}) error {
 		switch v.(type) {
-		case map[string]interface{}, []interface{}:
-			if err := flatten(false, flatMap, v, newKey, style); err != nil {
+		case map[string]interface{}:
+			if err := flatten(false, flatMap, v, newKey, style, options); err != nil {
 				return err
 			}
+		case []interface{}:
+			if options.NotFlattenSlice {
+				flatMap[newKey] = v
+			} else {
+				if err := flatten(false, flatMap, v, newKey, style, options); err != nil {
+					return err
+				}
+			}
+		case map[string]string:
+			for k, _v := range v.(map[string]string) {
+				flatMap[enkey(false, newKey, k, style)] = _v
+			}
+		case map[string]int:
+			for k, _v := range v.(map[string]int) {
+				flatMap[enkey(false, newKey, k, style)] = _v
+			}
+		case map[string]float64:
+			for k, _v := range v.(map[string]float64) {
+				flatMap[enkey(false, newKey, k, style)] = _v
+			}
 		default:
-			flatMap[newKey] = v
+			t := reflect.TypeOf(v)
+			// check v can convertible to map[string]string
+			var converted map[string]string
+			if t.Kind() == reflect.Map {
+				stringTpe := reflect.TypeOf("")
+				if ok := t.Key().ConvertibleTo(stringTpe); ok {
+					if ok := t.Elem().ConvertibleTo(stringTpe); ok {
+						if err := copier.Copy(&converted, v); err != nil {
+							converted = nil
+						}
+					}
+				}
+			}
+
+			if converted != nil {
+				for k, _v := range converted {
+					flatMap[enkey(false, newKey, k, style)] = _v
+				}
+			} else {
+				flatMap[newKey] = v
+			}
 		}
 
 		return nil
